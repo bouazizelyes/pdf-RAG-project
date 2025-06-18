@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Conda/Virtual Environments
+llm-dev/
+.env
+.venv
+env/
+venv/
+
+# Data Files (to prevent committing large files to Git)
+data/
+*.pdf
+*.json
+*.csv
+
+# IDE and OS specific files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Notebook Checkpoints
+.ipynb_checkpoints/
