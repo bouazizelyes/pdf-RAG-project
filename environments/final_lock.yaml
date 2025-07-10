@@ -315,6 +315,7 @@ dependencies:
       - albumentations==2.0.8
       - antlr4-python3-runtime==4.9.3
       - aurelio-sdk==0.0.19
+      - beautifulsoup4==4.13.4
       - bitsandbytes==0.46.1
       - boto3==1.39.3
       - botocore==1.39.3
@@ -348,9 +349,11 @@ dependencies:
       - jsonschema==4.24.0
       - jsonschema-specifications==2025.4.1
       - kiwisolver==1.4.8
+      - langchain-huggingface==0.3.0
       - litellm==1.74.0.post1
       - loguru==0.7.3
       - markdown-it-py==3.0.0
+      - markdownify==1.1.0
       - matplotlib==3.10.3
       - mdurl==0.1.2
       - mineru==2.1.0
@@ -375,7 +378,7 @@ dependencies:
       - opencv-python==4.12.0.88
       - opencv-python-headless==4.12.0.88
       - orjson==3.10.18
-      - packaging==25.0
+      - packaging==24.2
       - pandas==2.3.1
       - pdfminer-six==20250506
       - pdftext==0.6.3
@@ -410,6 +413,7 @@ dependencies:
       - shapely==2.1.1
       - shellingham==1.5.4
       - simsimd==6.5.0
+      - soupsieve==2.7
       - starlette==0.46.2
       - stringzilla==3.12.5
       - sympy==1.14.0
