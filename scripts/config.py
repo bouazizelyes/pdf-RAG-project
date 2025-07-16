@@ -27,8 +27,8 @@ INDEX_STORE_PATH.mkdir(parents=True, exist_ok=True)
 # --- Model & Device Configuration ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 EMBEDDING_MODEL = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
-RERANKER_MODEL = 'cross-encoder/ms-marco-MiniLM-L6-v2'
-GENERATION_MODEL = "Gensyn/Qwen2.5-1.5B-Instruct" # Using this as our SLM
+RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"  #'cross-encoder/ms-marco-MiniLM-L6-v2'
+GENERATION_MODEL = "Qwen/Qwen2.5-1.5B-Instruct" # Using this as our SLM
 
 # --- Processing & Chunking Configuration ---
 OCR_LANGUAGE = "fr"
