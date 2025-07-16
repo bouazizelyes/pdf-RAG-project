@@ -9,6 +9,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from sentence_transformers.cross_encoder import CrossEncoder
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from langchain_community.document_transformers import LongContextReorder
 
 import config
 
@@ -45,6 +46,7 @@ class HybridRetriever:
         self.bm25_retriever = BM25Retriever.from_documents(self.documents)
         self.bm25_retriever.k = config.INITIAL_K_RETRIEVAL
         print("✅ BM25 index built.")
+        
 
     def _load_expansion_llm(self):
         if self.llm_model is None:
@@ -70,6 +72,8 @@ class HybridRetriever:
         with torch.no_grad():
             outputs = self.llm_model.generate(**inputs, max_new_tokens=128, do_sample=False)
         generated_text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+        del outputs  # free the tensor explicitly
+        torch.cuda.empty_cache() 
         # Extract only the reformulated part
         reformulations_part = generated_text.split("Reformulations:")[-1].strip()
         queries = [q.strip() for q in reformulations_part.split('\n') if q.strip()]
@@ -118,23 +122,32 @@ class HybridRetriever:
 
         # 4. Rerank with Cross-Encoder
         print(f"\n--- Step 4: Reranking top {len(rerank_candidates)} candidates ---")
-        reranker = CrossEncoder(config.RERANKER_MODEL, max_length=512, device=self.device)
-        sentence_pairs = [(query_text, doc.page_content) for doc in rerank_candidates]
-        scores = reranker.predict(sentence_pairs, show_progress_bar=True)
-        
-        for doc, score in zip(rerank_candidates, scores):
-            doc.metadata['rerank_score'] = score
-        
-        sorted_results = sorted(rerank_candidates, key=lambda d: d.metadata['rerank_score'], reverse=True)
-        
-        # On prend le top K documents *avant* de réorganiser
-        top_k_docs = sorted_results[:config.TOP_K_RERANK]
-        
-        # 5. Réorganisation du contexte pour optimiser l'attention du LLM
-        
-        print(f"\n--- Étape 5: Réorganisation des {len(top_k_docs)} documents pour contrer le 'Lost in the Middle' ---")
-        reorderer = LongContextReorder()
-        reordered_docs = reorderer.transform_documents(top_k_docs)
-        
-        print("✅ Processus de récupération complet. Retour des documents réorganisés.")
-        return reordered_docs
+        with torch.no_grad():
+            reranker = CrossEncoder(config.RERANKER_MODEL, max_length=512, device=self.device)
+            print(f" reranker pad : {reranker.tokenizer.pad_token}   {reranker.tokenizer.pad_token}")
+            reranker.tokenizer.pad_token = reranker.tokenizer.eos_token
+            reranker.model.config.pad_token_id = reranker.tokenizer.pad_token_id
+            try:
+                sentence_pairs = [(query_text, doc.page_content) for doc in rerank_candidates]
+                scores = reranker.predict(sentence_pairs, batch_size=2, show_progress_bar=True)
+            
+                for doc, score in zip(rerank_candidates, scores):
+                    doc.metadata['rerank_score'] = score
+                
+                sorted_results = sorted(rerank_candidates, key=lambda d: d.metadata['rerank_score'], reverse=True)
+                
+                # On prend le top K documents *avant* de réorganiser
+                top_k_docs = sorted_results[:config.TOP_K_RERANK]
+                
+                # 5. Réorganisation du contexte pour optimiser l'attention du LLM
+                
+                print(f"\n--- Étape 5: Réorganisation des {len(top_k_docs)} documents pour contrer le 'Lost in the Middle' ---")
+                reorderer = LongContextReorder()
+                reordered_docs = reorderer.transform_documents(top_k_docs)
+            finally:
+                del reranker
+                torch.cuda.empty_cache()
+                gc.collect()
+
+            print("✅ Processus de récupération complet. Retour des documents réorganisés.")
+            return reordered_docs  
