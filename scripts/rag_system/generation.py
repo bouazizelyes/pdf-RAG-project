@@ -52,7 +52,7 @@ class AnswerGenerator:
             inputs = self.tokenizer(final_prompt, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 outputs = self.model.generate(
-                    **inputs, max_new_tokens=1024, do_sample=True, temperature=0.2, top_p=0.95
+                    **inputs, max_new_tokens=256, do_sample=True, temperature=0.1, top_p=0.95
                 )
             answer = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
