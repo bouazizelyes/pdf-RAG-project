@@ -1,7 +1,8 @@
 # scripts/run_rag.py
-
+import torch
 import json
 from langchain_core.documents import Document
+from langchain_community.document_transformers import LongContextReorder
 
 # --- Local Imports from your RAG library ---
 import config
@@ -9,6 +10,10 @@ from rag_system.retrieval import HybridRetriever
 from rag_system.generation import AnswerGenerator
 
 def main():
+
+    torch.cuda.memory._record_memory_history(enabled='all', context='all', stacks='all', max_entries=50_000)
+
+    
     """Main function to run the live RAG query system."""
     print("--- Initializing Live RAG System ---")
 
@@ -24,22 +29,30 @@ def main():
         documents = [Document(**d) for d in json.load(f)]
     
     retriever = HybridRetriever(documents=documents)
+    
 
     # --- Step 3: Define query and retrieve documents ---
-    user_query = "Quelles sont les directives pour la documentation technique et comment est-elle versionnée?"
+    user_query = "Quelle est la structure de réponse attendue pour une API REST (GET) en cas de succès dans le référentiel technique ?"
     print(f"\n--- Processing Query: '{user_query}' ---")
-    
+    torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
     retrieved_docs = retriever.retrieve(query_text=user_query)
+    
 
     if not retrieved_docs:
         print("\nNo relevant documents found. Cannot generate an answer.")
         return
-
+    torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
     # --- Step 4: Initialize generator and produce the final answer ---
     generator = AnswerGenerator()
-    
+    torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
     print("\n--- Generating Final Answer ---")
+    
+    
+    
+    
     final_answer = generator.generate_answer(query=user_query, context_docs=retrieved_docs)
+    torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
 
     print("\n\n================ FINAL ANSWER ================")
     print(final_answer)

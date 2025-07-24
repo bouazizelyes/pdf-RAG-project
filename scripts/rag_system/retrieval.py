@@ -1,12 +1,12 @@
 # scripts/rag_system/retrieval.py
-
+import re
 import torch
 import gc
 from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers.cross_encoder import CrossEncoder
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from langchain_community.document_transformers import LongContextReorder
@@ -47,7 +47,7 @@ class HybridRetriever:
         self.bm25_retriever.k = config.INITIAL_K_RETRIEVAL
         print("✅ BM25 index built.")
         
-
+    
     def _load_expansion_llm(self):
         if self.llm_model is None:
             print("  -> Loading LLM for query expansion...")
@@ -56,7 +56,15 @@ class HybridRetriever:
                 config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
             )
             self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
-
+    """
+    def _load_expansion_llm(self):
+        if self.llm_model is None:
+            print("  -> Loading LLM for query expansion...")
+            self.llm_model = AutoModelForCausalLM.from_pretrained(
+                config.GENERATION_MODEL, device_map="auto"
+            )
+            self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
+    """
     def _unload_expansion_llm(self):
         if self.llm_model is not None:
             del self.llm_model
@@ -68,14 +76,29 @@ class HybridRetriever:
 
     def _generate_queries(self, original_query: str) -> List[str]:
         prompt = config.QUERY_REWRITE_PROMPT.format(original_query=original_query)
-        inputs = self.llm_tokenizer(prompt, return_tensors="pt").to(self.device)
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
+        text = self.llm_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False # Switches between thinking and non-thinking modes. Default is True.
+            )
+        inputs = self.llm_tokenizer([text], return_tensors="pt").to(self.device)
         with torch.no_grad():
-            outputs = self.llm_model.generate(**inputs, max_new_tokens=128, do_sample=False)
+            outputs = self.llm_model.generate(**inputs, max_new_tokens=128, do_sample=True,temperature=0.7, top_p=0.8, top_k=20, min_p=0, eos_token_id=self.llm_tokenizer.convert_tokens_to_ids("</system>"))
         generated_text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"query expansion generated text:{generated_text}")
+        cleaned = re.sub(r"<system>.*?</system>", "", generated_text, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+        # Remove any leading “1.” “2.” “assistant:” or “user:”
+        cleaned = re.sub(r"^\s*(\d+\.\s*|assistant:|user:)", "", cleaned, flags=re.IGNORECASE|re.MULTILINE)
+        print(f"==============\ncleaned\n============={cleaned}")
         del outputs  # free the tensor explicitly
         torch.cuda.empty_cache() 
         # Extract only the reformulated part
-        reformulations_part = generated_text.split("Reformulations:")[-1].strip()
+        reformulations_part = cleaned.split("Reformulations:")[-1].strip()
         queries = [q.strip() for q in reformulations_part.split('\n') if q.strip()]
         return list(set([original_query] + queries))
 

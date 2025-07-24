@@ -15,7 +15,7 @@ class AnswerGenerator:
         print("Initializing Answer Generator...")
         self.device = config.DEVICE
         self.model, self.tokenizer = None, None
-
+    
     def _load_model(self):
         if self.model is None:
             print("  -> Loading SLM for answer generation...")
@@ -24,6 +24,16 @@ class AnswerGenerator:
                 config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
             )
             self.tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
+            
+
+    """
+    def _load_model(self):
+        if self.model is None:
+            print("  -> Loading SLM for answer generation...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                config.GENERATION_MODEL, device_map="auto", torch_dtype="auto"
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)"""
 
     def _unload_model(self):
         if self.model is not None:
@@ -45,14 +55,25 @@ class AnswerGenerator:
                 for doc in context_docs
             ])
             
-            # 2. Create the final prompt
+            # 2. Create the final prompt            
             final_prompt = config.ANSWER_GENERATION_PROMPT.format(context=context, query=query)
-
+            
+            messages = [
+                {"role": "user", "content": final_prompt}
+            ]
             # 3. Generate the answer
-            inputs = self.tokenizer(final_prompt, return_tensors="pt").to(self.device)
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+            )
+            
+            inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+            
             with torch.no_grad():
                 outputs = self.model.generate(
-                    **inputs, max_new_tokens=256, do_sample=True, temperature=0.1, top_p=0.95
+                    **inputs, max_new_tokens=512, do_sample=True,temperature=0.6, top_p=0.95, top_k=20,min_p=0
                 )
             answer = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
