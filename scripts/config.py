@@ -2,6 +2,9 @@
 
 from pathlib import Path
 import torch
+import os
+
+DEBUG = os.getenv("DEBUG_MODE", "0") == "1"
 
 # --- Project & Data Paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,41 +47,57 @@ RRF_K_CONSTANT = 60
 # --- PROMPTS ---
 
 # Prompt for generating multiple queries from a single user question
-QUERY_REWRITE_PROMPT = """
-<system>
-Tu es un assistant expert en reformulation pour la recherche documentaire technique.
-Réfléchis étape par étape à trois manières distinctes de poser la question :
-1. Une formulation **générale** (pour capter l’intention large).  
-2. Une formulation **très technique** (en utilisant un vocabulaire technique comme API/JSON).  
-3. Une formulation **em mots simples** sans sacrifier la précision.
-
-NE RETOURNE QUE LES 3 QUESTIONS REFORMULÉES, **une par ligne**, **sans** numérotation, sans préambule ,sans salutation.
-
-Question originale : "{original_query}"
-
-Reformulations :
-</system>
-"""
+QUERY_REWRITE_PROMPT = [
+    {
+        "role": "system",
+        "content": (
+            "Tu es un assistant expert qui réécrit une question de 3 manières distinctes et complémentaires. "
+            "Ta réponse doit contenir UNIQUEMENT les 3 phrases, une par ligne. "
+            "N'ajoute AUCUN titre, AUCUN numéro, et AUCUNE explication."
+        )
+    },
+    # --- DÉBUT DE L'EXEMPLE "ONE-SHOT" ---
+    {
+        "role": "user",
+        "content": "Question originale : \"Comment configurer le pipeline de traitement des données ?\""
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Bonnes pratiques pour la configuration du pipeline de traitement de données\n"
+            "Guide d'intégration API et services pour le pipeline de données\n"
+            "Étapes simples pour démarrer avec le processeur de données"
+        )
+    },
+    # --- FIN DE L'EXEMPLE ---
+    
+    # La vraie question de l'utilisateur est insérée ici
+    {
+        "role": "user",
+        "content": "Question originale : \"{original_query}\""
+    }
+]
 
 # Prompt for the final answer generation by the SLM
-ANSWER_GENERATION_PROMPT = """
-Tu es un assistant expert chargé de synthétiser des informations techniques de manière claire et concise.
-En te basant STRICTEMENT sur le CONTEXTE fourni ci-dessous, réponds à la QUESTION de l'utilisateur.
-
-Règles importantes :
-1.  Ta réponse doit être uniquement basée sur les informations présentes dans le CONTEXTE.
-2.  Si tu nùqs pqs répondu à la question en utilisant le CONTEXTE, dis-le clairement : "D'après les documents fournis, je ne peux pas répondre à cette question."
-3.  Cite tes sources à la fin de chaque phrase en utilisant le format `[source: nom_du_fichier]`.
-4.  La réponse doit être en français.
-
-
-CONTEXTE:
----
-{context}
----
-
-QUESTION:
-{query}
-
-RÉPONSE:
-"""
+ANSWER_GENERATION_PROMPT = [
+    {
+        "role": "system",
+        "content": (
+            "Tu es un assistant de Q&A factuel. Ta seule mission est de répondre à la question de l'utilisateur en te basant **exclusivement** sur les extraits de documents fournis dans le CONTEXTE."
+            "\n\n**Règles impératives :**"
+            "\n1. Ne jamais, sous aucun prétexte, utiliser des connaissances externes. Ta réponse doit être une synthèse directe du CONTEXTE."
+            "\n2. Si les informations ne sont pas dans le CONTEXTE, ta seule et unique réponse doit être : **\"D'après les documents fournis, je ne peux pas répondre à cette question.\"**"
+            "\n3. Cite tes sources à la fin de chaque information pertinente en utilisant le format `[source: nom_du_fichier]`."
+            "\n4. Rédige en français, dans un style clair et direct."
+        ),
+    },
+    {
+        "role": "user",
+        "content": (
+            "CONTEXTE:\n"
+            "{context}\n\n"
+            "QUESTION:\n"
+            "{query}"
+        )
+    }
+]

@@ -12,6 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from langchain_community.document_transformers import LongContextReorder
 
 import config
+from config import DEBUG
 
 class HybridRetriever:
     """
@@ -75,10 +76,15 @@ class HybridRetriever:
             print("     - Expansion LLM unloaded.")
 
     def _generate_queries(self, original_query: str) -> List[str]:
-        prompt = config.QUERY_REWRITE_PROMPT.format(original_query=original_query)
+    
         messages = [
-            {"role": "user", "content": prompt}
+            {
+                "role": msg["role"],
+                "content": msg["content"].format(original_query=original_query)
+            }
+            for msg in config.QUERY_REWRITE_PROMPT
         ]
+        #prompt = config.QUERY_REWRITE_PROMPT.format(original_query=original_query)
         text = self.llm_tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
@@ -86,21 +92,52 @@ class HybridRetriever:
                 enable_thinking=False # Switches between thinking and non-thinking modes. Default is True.
             )
         inputs = self.llm_tokenizer([text], return_tensors="pt").to(self.device)
+        input_length = inputs.input_ids.shape[1]
+        
         with torch.no_grad():
-            outputs = self.llm_model.generate(**inputs, max_new_tokens=128, do_sample=True,temperature=0.7, top_p=0.8, top_k=20, min_p=0, eos_token_id=self.llm_tokenizer.convert_tokens_to_ids("</system>"))
-        generated_text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
-        print(f"query expansion generated text:{generated_text}")
-        cleaned = re.sub(r"<system>.*?</system>", "", generated_text, flags=re.DOTALL)
-        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
-        # Remove any leading “1.” “2.” “assistant:” or “user:”
-        cleaned = re.sub(r"^\s*(\d+\.\s*|assistant:|user:)", "", cleaned, flags=re.IGNORECASE|re.MULTILINE)
-        print(f"==============\ncleaned\n============={cleaned}")
-        del outputs  # free the tensor explicitly
+            outputs = self.llm_model.generate(
+                **inputs,
+                max_new_tokens=128,
+                do_sample=True,
+                temperature=0.7, # Un peu moins de créativité pour garder le sujet
+                top_p=0.8,
+                # Utiliser le token EOS standard du modèle est plus fiable
+                eos_token_id=self.llm_tokenizer.eos_token_id 
+            )
+
+        # --- NOUVELLE LOGIQUE DE PARSING ---
+        
+        # 1. Isoler UNIQUEMENT le texte généré par le modèle
+        generated_ids = outputs[0][input_length:]
+        generated_text = self.llm_tokenizer.decode(generated_ids, skip_special_tokens=True)
+        
+        print(f"--- Raw Generated Text ---\n{generated_text}\n--------------------------")
+
+        # 2. Nettoyer et extraire les requêtes ligne par ligne
+        queries = []
+        # Le modèle peut parfois ajouter des labels comme "Reformulations:", on les ignore
+        clean_text = generated_text.split("Reformulations:")[-1]
+        
+        for line in clean_text.split('\n'):
+            clean_line = line.strip()
+
+            # Ignorer les lignes vides ou les artefacts de formatage
+            if not clean_line or clean_line.startswith("`"):
+                continue
+                
+            # Retirer les numérotations ou les tirets en début de ligne
+            clean_line = re.sub(r'^\s*(\d+\.|\*|-)\s*', '', clean_line)
+
+            queries.append(clean_line)
+                
+        # Libérer la mémoire
+        del outputs
         torch.cuda.empty_cache() 
-        # Extract only the reformulated part
-        reformulations_part = cleaned.split("Reformulations:")[-1].strip()
-        queries = [q.strip() for q in reformulations_part.split('\n') if q.strip()]
-        return list(set([original_query] + queries))
+        
+        # Renvoyer une liste unique avec la requête originale
+        all_queries = [original_query] + queries
+        final_queries = list(dict.fromkeys(all_queries))
+        return final_queries
 
     def _reciprocal_rank_fusion(self, ranked_lists: List[List[Document]]) -> List[Document]:
         scores: Dict[str, float] = {}
@@ -121,21 +158,24 @@ class HybridRetriever:
         # 1. Expand Query
         try:
             self._load_expansion_llm()
-            print("\n--- Step 1: Expanding query ---")
+            if DEBUG:
+                print("\n--- Step 1: Expanding query ---")
             expanded_queries = self._generate_queries(query_text)
             print(f"     Expanded to: {expanded_queries}")
         finally:
             self._unload_expansion_llm()
 
         # 2. Hybrid Retrieval for each query
-        print("\n--- Step 2: Retrieving from BM25 and FAISS ---")
+        if DEBUG:
+            print("\n--- Step 2: Retrieving from BM25 and FAISS ---")
         all_ranked_lists = []
         for q in expanded_queries:
             all_ranked_lists.append(self.bm25_retriever.invoke(q))
             all_ranked_lists.append(self.faiss_retriever.invoke(q))
             
         # 3. Fuse Results
-        print("\n--- Step 3: Fusing results with RRF ---")
+        if DEBUG:
+            print("\n--- Step 3: Fusing results with RRF ---")
         fused_candidates = self._reciprocal_rank_fusion(all_ranked_lists)
         unique_docs_map = {f"{doc.metadata['source']}_{doc.metadata['chunk_number']}": doc for doc in fused_candidates}
         rerank_candidates = list(unique_docs_map.values())[:config.CANDIDATES_FOR_RERANKING]
@@ -144,7 +184,8 @@ class HybridRetriever:
             return []
 
         # 4. Rerank with Cross-Encoder
-        print(f"\n--- Step 4: Reranking top {len(rerank_candidates)} candidates ---")
+        if DEBUG:
+            print(f"\n--- Step 4: Reranking top {len(rerank_candidates)} candidates ---")
         with torch.no_grad():
             reranker = CrossEncoder(config.RERANKER_MODEL, max_length=512, device=self.device)
             print(f" reranker pad : {reranker.tokenizer.pad_token}   {reranker.tokenizer.pad_token}")
@@ -163,8 +204,8 @@ class HybridRetriever:
                 top_k_docs = sorted_results[:config.TOP_K_RERANK]
                 
                 # 5. Réorganisation du contexte pour optimiser l'attention du LLM
-                
-                print(f"\n--- Étape 5: Réorganisation des {len(top_k_docs)} documents pour contrer le 'Lost in the Middle' ---")
+                if DEBUG:
+                    print(f"\n--- Étape 5: Réorganisation des {len(top_k_docs)} documents pour contrer le 'Lost in the Middle' ---")
                 reorderer = LongContextReorder()
                 reordered_docs = reorderer.transform_documents(top_k_docs)
             finally:
