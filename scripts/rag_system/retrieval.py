@@ -34,7 +34,8 @@ class HybridRetriever:
         # 1. Load FAISS index from disk
         print("  -> Loading FAISS index...")
         embeddings = HuggingFaceEmbeddings(
-            model_name=config.EMBEDDING_MODEL, model_kwargs={'device': self.device}
+            model_name=config.EMBEDDING_MODEL, 
+            model_kwargs={'device': self.device} if self.device.type != "cpu" else {'device': 'cpu', 'model_kwargs': {'torch_dtype': torch.float32}}
         )
         vectorstore = FAISS.load_local(
             str(config.FAISS_INDEX_PATH), embeddings, allow_dangerous_deserialization=True
@@ -52,27 +53,31 @@ class HybridRetriever:
     def _load_expansion_llm(self):
         if self.llm_model is None:
             print("  -> Loading LLM for query expansion...")
-            quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-            self.llm_model = AutoModelForCausalLM.from_pretrained(
-                config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
-            )
-            self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
-    """
-    def _load_expansion_llm(self):
-        if self.llm_model is None:
-            print("  -> Loading LLM for query expansion...")
-            self.llm_model = AutoModelForCausalLM.from_pretrained(
-                config.GENERATION_MODEL, device_map="auto"
-            )
-            self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
-    """
+            # CPU-compatible model loading
+            if self.device.type == "cpu":
+                self.llm_model = AutoModelForCausalLM.from_pretrained(
+                    config.GENERATION_MODEL,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,
+                    device_map="auto" if hasattr(torch, 'cpu') else None
+                )
+                self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
+            else:
+                # GPU version with quantization
+                quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+                self.llm_model = AutoModelForCausalLM.from_pretrained(
+                    config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
+                )
+                self.llm_tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
+
     def _unload_expansion_llm(self):
         if self.llm_model is not None:
             del self.llm_model
             del self.llm_tokenizer
             self.llm_model, self.llm_tokenizer = None, None
             gc.collect()
-            torch.cuda.empty_cache()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
             print("     - Expansion LLM unloaded.")
 
     def _generate_queries(self, original_query: str) -> List[str]:
@@ -132,7 +137,8 @@ class HybridRetriever:
                 
         # Libérer la mémoire
         del outputs
-        torch.cuda.empty_cache() 
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache() 
         
         # Renvoyer une liste unique avec la requête originale
         all_queries = [original_query] + queries
@@ -186,14 +192,33 @@ class HybridRetriever:
         # 4. Rerank with Cross-Encoder
         if DEBUG:
             print(f"\n--- Step 4: Reranking top {len(rerank_candidates)} candidates ---")
-        with torch.no_grad():
-            reranker = CrossEncoder(config.RERANKER_MODEL, max_length=512, device=self.device)
+        
+        # CPU-compatible reranker loading
+        try:
+            if self.device.type == "cpu":
+                reranker = CrossEncoder(
+                    config.RERANKER_MODEL, 
+                    max_length=512, 
+                    device='cpu',
+                    model_kwargs={'torch_dtype': torch.float32}
+                )
+            else:
+                reranker = CrossEncoder(
+                    config.RERANKER_MODEL, 
+                    max_length=512, 
+                    device=self.device
+                )
+            
             print(f" reranker pad : {reranker.tokenizer.pad_token}   {reranker.tokenizer.pad_token}")
             reranker.tokenizer.pad_token = reranker.tokenizer.eos_token
             reranker.model.config.pad_token_id = reranker.tokenizer.pad_token_id
-            try:
+            
+            with torch.no_grad():
                 sentence_pairs = [(query_text, doc.page_content) for doc in rerank_candidates]
-                scores = reranker.predict(sentence_pairs, batch_size=2, show_progress_bar=True)
+                
+                # CPU-friendly batch size
+                batch_size = 1 if self.device.type == "cpu" else 2
+                scores = reranker.predict(sentence_pairs, batch_size=batch_size, show_progress_bar=True)
             
                 for doc, score in zip(rerank_candidates, scores):
                     doc.metadata['rerank_score'] = score
@@ -208,10 +233,12 @@ class HybridRetriever:
                     print(f"\n--- Étape 5: Réorganisation des {len(top_k_docs)} documents pour contrer le 'Lost in the Middle' ---")
                 reorderer = LongContextReorder()
                 reordered_docs = reorderer.transform_documents(top_k_docs)
-            finally:
-                del reranker
+                
+        finally:
+            del reranker
+            if self.device.type == "cuda":
                 torch.cuda.empty_cache()
-                gc.collect()
+            gc.collect()
 
-            print("✅ Processus de récupération complet. Retour des documents réorganisés.")
-            return reordered_docs  
+        print("✅ Processus de récupération complet. Retour des documents réorganisés.")
+        return reordered_docs

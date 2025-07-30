@@ -27,22 +27,87 @@ MARKDOWN_DEST_DIR.mkdir(parents=True, exist_ok=True)
 JSON_DEST_DIR.mkdir(parents=True, exist_ok=True)     
 INDEX_STORE_PATH.mkdir(parents=True, exist_ok=True)
 
-# --- Model & Device Configuration ---
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+# --- Device Configuration ---
+def get_device():
+    """Get the best available device"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+DEVICE = get_device()
+
+# --- CPU Acceleration Configuration ---
+def configure_cpu_optimizations():
+    """Configure CPU optimizations for better performance"""
+    if DEVICE.type == "cpu":
+        # Set number of threads for intra-op parallelism
+        torch.set_num_threads(os.cpu_count() or 1)
+        
+        # Set number of threads for inter-op parallelism
+        torch.set_num_interop_threads(min(2, os.cpu_count() or 1))
+        
+        # Enable MKL optimizations if available
+        if torch.backends.mkldnn.is_available():
+            torch.backends.mkldnn.enabled = True
+            
+        # Enable OpenMP optimizations
+        os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 1)
+        os.environ["MKL_NUM_THREADS"] = str(os.cpu_count() or 1)
+        os.environ["NUMEXPR_NUM_THREADS"] = str(os.cpu_count() or 1)
+
+# Apply CPU optimizations
+configure_cpu_optimizations()
+
+# --- Keep Your Original Models ---
 EMBEDDING_MODEL = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
-RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"  #'cross-encoder/ms-marco-MiniLM-L6-v2'
-GENERATION_MODEL = "Qwen/Qwen3-1.7B"#"Qwen/Qwen2.5-1.5B-Instruct" # Using this as our SLM
+RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
+GENERATION_MODEL = "Qwen/Qwen3-1.7B"
+
+# --- CPU-Aware Model Loading Parameters ---
+def get_model_loading_config():
+    """Get model loading configuration based on device"""
+    if DEVICE.type == "cpu":
+        return {
+            "torch_dtype": torch.float32,  # Use float32 for CPU
+            "low_cpu_mem_usage": True,     # Reduce memory usage during loading
+            "device_map": "auto" if hasattr(torch, 'cpu') else None  # Distribute if possible
+        }
+    else:
+        return {
+            "torch_dtype": torch.float16 if DEVICE.type == "cuda" else torch.float32,
+            "device_map": None
+        }
+
+MODEL_LOADING_CONFIG = get_model_loading_config()
 
 # --- Processing & Chunking Configuration ---
 OCR_LANGUAGE = "fr"
 CHUNK_MIN_TOKENS = 100
 CHUNK_MAX_TOKENS = 500
 
-# --- RAG Pipeline Parameters ---
-INITIAL_K_RETRIEVAL = 15
-CANDIDATES_FOR_RERANKING = 70
-TOP_K_RERANK = 5
-RRF_K_CONSTANT = 60
+# --- RAG Pipeline Parameters (CPU-optimized) ---
+if DEVICE.type == "cpu":
+    # Reduce computational load for CPU while keeping quality
+    INITIAL_K_RETRIEVAL = 10  # Reduced from 15
+    CANDIDATES_FOR_RERANKING = 30  # Reduced from 70
+    TOP_K_RERANK = 5
+    RRF_K_CONSTANT = 40  # Reduced from 60
+    BATCH_SIZE = 2  # Small batch size for CPU
+    MAX_TOKENS_PER_CHUNK = 400  # Reduce token count per chunk
+else:
+    # Original parameters for GPU
+    INITIAL_K_RETRIEVAL = 15
+    CANDIDATES_FOR_RERANKING = 70
+    TOP_K_RERANK = 5
+    RRF_K_CONSTANT = 60
+    BATCH_SIZE = 8
+    MAX_TOKENS_PER_CHUNK = 500
+
+# --- CPU Memory Management ---
+CPU_MAX_MODEL_SIZE_GB = 20 # Maximum model size to load (adjust based on your RAM)
 
 # --- PROMPTS ---
 

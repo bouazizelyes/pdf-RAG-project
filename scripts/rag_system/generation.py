@@ -22,21 +22,24 @@ class AnswerGenerator:
         if self.model is None:
             if DEBUG:
                 print("  -> Loading SLM for answer generation...")
-            quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
             
-
-    """
-    def _load_model(self):
-        if self.model is None:
-            print("  -> Loading SLM for answer generation...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                config.GENERATION_MODEL, device_map="auto", torch_dtype="auto"
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)"""
+            # Use different loading strategy based on device
+            if self.device.type == "cpu":
+                # CPU-friendly loading without quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    config.GENERATION_MODEL,
+                    torch_dtype=torch.float32,  # Use float32 for CPU
+                    low_cpu_mem_usage=True,      # Reduce memory usage
+                    device_map="auto" if hasattr(torch, 'cpu') else None
+                )
+            else:
+                # GPU loading with quantization (original approach)
+                quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    config.GENERATION_MODEL, quantization_config=quant_config, device_map="auto"
+                )
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(config.GENERATION_MODEL)
 
     def _unload_model(self):
         if self.model is not None:
@@ -44,12 +47,10 @@ class AnswerGenerator:
             del self.tokenizer
             self.model, self.tokenizer = None, None
             gc.collect()
-            torch.cuda.empty_cache()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
             if DEBUG:
                 print("- Generation SLM unloaded.")
-
-
-
 
     # Définissez cette fonction utilitaire dans votre classe ou en dehors
     def _parse_qwen_thinking_output(self, generated_ids: List[int], tokenizer: PreTrainedTokenizer) -> Tuple[str, str]:
@@ -58,13 +59,13 @@ class AnswerGenerator:
         Returns a tuple of (thinking_content, final_content).
         """
         try:
-            # L'ID du token </think> pour Qwen3 est 151668
+            # L'ID du token  </think> pour Qwen3 est 151668
             think_token_id = tokenizer.convert_tokens_to_ids("</think>")
             
             # Trouver l'index de la fin du bloc <think>
             index = len(generated_ids) - generated_ids[::-1].index(think_token_id)
         except (ValueError, IndexError):
-            # Le tag </think> n'a pas été trouvé ou la liste est vide
+            # Le tag  </think> n'a pas été trouvé ou la liste est vide
             index = 0
 
         thinking_content = tokenizer.decode(generated_ids[:index], skip_special_tokens=True)
@@ -98,10 +99,11 @@ class AnswerGenerator:
                 enable_thinking=True 
             )
             
+            # Device-aware tokenization
             inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
             input_length = inputs.input_ids.shape[1]
 
-            # 4. Generate output
+            # 4. Generate output - same parameters for both CPU and GPU
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,

@@ -111,9 +111,9 @@ def _chunk_text(text: str, source_name: str, chunker_encoder: HuggingFaceEncoder
     chunks = chunker([text])[0]
     return [
         Document(
-            page_content=chunk.content,
+            page_content=chunk_content,
             metadata={"source": source_name, "chunk_number": i + 1}
-        ) for i, chunk in enumerate(chunks)
+        ) for i, chunk_content in enumerate([chunk.content for chunk in chunks])
     ]
 
 def _chunk_document_holistically(full_text: str, source_name: str, chunker_encoder) -> List[Document]:
@@ -179,9 +179,21 @@ def get_documents_from_sources() -> List[Document]:
 
     print("--- Starting Document Preprocessing and Chunking ---")
     
-    # Initialize the chunker's encoder model once for efficiency.
+    # Initialize the chunker's encoder model with CPU-compatible settings
     print(f"Initializing Chunker Encoder: {config.EMBEDDING_MODEL}...")
-    chunker_encoder = HuggingFaceEncoder(name=config.EMBEDDING_MODEL, device=config.DEVICE)
+    
+    # CPU optimization: Use appropriate settings based on device
+    if config.DEVICE.type == "cpu":
+        chunker_encoder = HuggingFaceEncoder(
+            name=config.EMBEDDING_MODEL, 
+            device="cpu",
+            model_kwargs={"torch_dtype": "float32"}
+        )
+    else:
+        chunker_encoder = HuggingFaceEncoder(
+            name=config.EMBEDDING_MODEL, 
+            device=config.DEVICE
+        )
 
     # Find all source PDFs which are the basis for our processing.
     all_docs = []
@@ -192,6 +204,11 @@ def get_documents_from_sources() -> List[Document]:
         return []
 
     print(f"Found {len(source_pdfs)} source PDFs to process.")
+    
+    # CPU optimization: Process smaller batches or limit concurrent operations
+    if config.DEVICE.type == "cpu":
+        # For CPU, we might want to process fewer documents at once to manage memory
+        pass  # The existing logic should work fine, but you could add batch limiting here if needed
     
     for pdf_path in tqdm(source_pdfs, desc="Processing sources"):
         json_path = config.JSON_DEST_DIR / f"{pdf_path.stem}_model.json"
@@ -220,6 +237,7 @@ def get_documents_from_sources() -> List[Document]:
             docs_from_file = _chunk_document_holistically(source_text, source_name, chunker_encoder)
             all_docs.extend(docs_from_file)
             
+    # Add chunk numbers to all documents
     for i, doc in enumerate(all_docs):
         doc.metadata["chunk_number"] = i + 1
             
