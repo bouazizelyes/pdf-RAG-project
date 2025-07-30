@@ -46,9 +46,11 @@ class AnswerGenerator:
             del self.model
             del self.tokenizer
             self.model, self.tokenizer = None, None
+            import gc
             gc.collect()
-            if self.device.type == "cuda":
+            if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Wait for all operations to complete
             if DEBUG:
                 print("- Generation SLM unloaded.")
 
@@ -74,22 +76,27 @@ class AnswerGenerator:
         return thinking_content.strip(), final_content.strip()
 
     # Votre fonction de classe modifiée
+    # In your generation.py, add more debug prints:
     def generate_answer(self, query: str, context_docs: List[Document]) -> str:
         """Generates a final answer based on the provided query and context documents."""
         try:
+            print("🔍 Starting answer generation...")
             self._load_model()
+            print("✅ Model loaded successfully")
             
             # 1. Format context
             context = "\n\n---\n\n".join([
                 f"Source: {doc.metadata['source']}\n\n{doc.page_content}"
                 for doc in context_docs
             ])
+            print(f"📄 Context formatted ({len(context)} characters)")
             
             # 2. Create messages for the prompt
             messages = [
                 {"role": msg["role"], "content": msg["content"].format(context=context, query=query)}
                 for msg in config.ANSWER_GENERATION_PROMPT
             ]
+            print("💬 Messages created")
                 
             # 3. Apply chat template with thinking enabled
             text = self.tokenizer.apply_chat_template(
@@ -98,36 +105,60 @@ class AnswerGenerator:
                 add_generation_prompt=True,
                 enable_thinking=True 
             )
+            print("📝 Chat template applied")
             
-            # Device-aware tokenization
-            inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+            # CPU optimization: limit input length to prevent memory issues
+            inputs = self.tokenizer(
+                [text], 
+                return_tensors="pt", 
+                truncation=True,
+                max_length=2048 if self.device.type == "cpu" else None
+            ).to(self.device)
             input_length = inputs.input_ids.shape[1]
+            print(f"📥 Inputs prepared (length: {input_length})")
 
-            # 4. Generate output - same parameters for both CPU and GPU
+            # 4. Generate output with CPU-friendly parameters
+            print("🚀 Generating response...")
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    do_sample=True,
-                    temperature=0.6, 
-                    top_p=0.95,
-                    top_k=20,
-                    min_p=0,
-                    eos_token_id=self.tokenizer.eos_token_id
-                )
+                generate_kwargs = {
+                    "max_new_tokens": 512 if self.device.type == "cpu" else 512,  # Reduce for CPU
+                    "do_sample": True,
+                    "temperature": 0.6,
+                    "top_p": 0.95,
+                    "top_k": 20,
+                    "min_p":0,
+                    "eos_token_id": self.tokenizer.eos_token_id
+                    
+                }
+                
+                # Add additional CPU optimizations
+                if self.device.type == "cpu":
+                    generate_kwargs.update({
+                        "num_beams": 1,  # Disable beam search for speed
+                        "early_stopping": True
+                    })
+                
+                outputs = self.model.generate(**inputs, **generate_kwargs)
+            print("✅ Generation completed")
 
-            # 5. --- NOUVELLE LOGIQUE DE PARSING ---
-            # Isoler uniquement les tokens générés
+            # 5. Parse the output
             generated_ids = outputs[0][input_length:].tolist()
-            
-            # Utiliser la fonction de parsing dédiée au mode "thinking"
             thinking_process, final_answer = self._parse_qwen_thinking_output(generated_ids, self.tokenizer)
+            
             if DEBUG:
                 print("============== THINKING PROCESS ==============")
                 print(thinking_process)
                 print("============================================")
             
+            print("✅ Answer parsed successfully")
             return final_answer
 
+        except Exception as e:
+            print(f"❌ Error in generate_answer: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback response
+            return "D'après les documents fournis, je ne peux pas répondre à cette question."
         finally:
             self._unload_model()
+            print("🧹 Model unloaded")

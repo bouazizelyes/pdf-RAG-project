@@ -91,17 +91,17 @@ CHUNK_MAX_TOKENS = 500
 # --- RAG Pipeline Parameters (CPU-optimized) ---
 if DEVICE.type == "cpu":
     # Reduce computational load for CPU while keeping quality
-    INITIAL_K_RETRIEVAL = 10  # Reduced from 15
-    CANDIDATES_FOR_RERANKING = 30  # Reduced from 70
-    TOP_K_RERANK = 5
-    RRF_K_CONSTANT = 40  # Reduced from 60
-    BATCH_SIZE = 2  # Small batch size for CPU
-    MAX_TOKENS_PER_CHUNK = 400  # Reduce token count per chunk
+    INITIAL_K_RETRIEVAL = 15  # Reduced from 15
+    CANDIDATES_FOR_RERANKING = 70  # Reduced from 70
+    TOP_K_RERANK = 6
+    RRF_K_CONSTANT = 60  # Reduced from 60
+    BATCH_SIZE = 6  # Small batch size for CPU
+    MAX_TOKENS_PER_CHUNK = 500  # Reduce token count per chunk
 else:
     # Original parameters for GPU
     INITIAL_K_RETRIEVAL = 15
     CANDIDATES_FOR_RERANKING = 70
-    TOP_K_RERANK = 5
+    TOP_K_RERANK = 6
     RRF_K_CONSTANT = 60
     BATCH_SIZE = 8
     MAX_TOKENS_PER_CHUNK = 500
